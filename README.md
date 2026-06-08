@@ -119,7 +119,3 @@ Both stacks publish:
 - `/odom_path` — red (odometry)
 - `/pf_path` — green (filter estimate)
 - `/camera/image_annotated` — detections overlay
-
-## Further documentation
-
-Implementation log and technical reference: `ros2_ws/src/pf_localization/docs/REPORT_DRAFT.md`.

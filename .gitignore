@@ -26,5 +26,9 @@ real/assets/STORE_MODULE_ASSETS_HERE
 real/.bumpversion.cfg
 
 ros2_ws/src/pf_localization/test/
+ros2_ws/src/pf_localization/docs/
+
+Project.pdf
+*.pdf
 
 *.resolved
