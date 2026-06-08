@@ -162,7 +162,7 @@ class ParticleFilter:
         return (x, y, theta)
 
 class ParticleFilterNode(Node):
-    _PARAMETER_TYPES = {'num_particles': Parameter.Type.INTEGER, 'room_min_x': Parameter.Type.DOUBLE, 'room_max_x': Parameter.Type.DOUBLE, 'room_min_y': Parameter.Type.DOUBLE, 'room_max_y': Parameter.Type.DOUBLE, 'tag_size_m': Parameter.Type.DOUBLE, 'tag_x': Parameter.Type.DOUBLE_ARRAY, 'tag_y': Parameter.Type.DOUBLE_ARRAY, 'tag_yaw': Parameter.Type.DOUBLE_ARRAY, 'odom_noise_trans': Parameter.Type.DOUBLE, 'odom_noise_rot': Parameter.Type.DOUBLE, 'sensor_noise_range': Parameter.Type.DOUBLE, 'sensor_noise_bearing': Parameter.Type.DOUBLE, 'min_resample_neff_ratio': Parameter.Type.DOUBLE, 'publish_rate_hz': Parameter.Type.DOUBLE, 'map_frame': Parameter.Type.STRING, 'path_max_poses': Parameter.Type.INTEGER, 'camera_image_topic': Parameter.Type.STRING, 'camera_image_width': Parameter.Type.INTEGER, 'camera_image_height': Parameter.Type.INTEGER, 'camera_horizontal_fov': Parameter.Type.DOUBLE, 'camera_yaw_offset': Parameter.Type.DOUBLE, 'seed_particles_from_odom': Parameter.Type.BOOL, 'init_std_x': Parameter.Type.DOUBLE, 'init_std_y': Parameter.Type.DOUBLE, 'init_std_yaw': Parameter.Type.DOUBLE}
+    _PARAMETER_TYPES = {'num_particles': Parameter.Type.INTEGER, 'room_min_x': Parameter.Type.DOUBLE, 'room_max_x': Parameter.Type.DOUBLE, 'room_min_y': Parameter.Type.DOUBLE, 'room_max_y': Parameter.Type.DOUBLE, 'tag_size_m': Parameter.Type.DOUBLE, 'tag_x': Parameter.Type.DOUBLE_ARRAY, 'tag_y': Parameter.Type.DOUBLE_ARRAY, 'tag_yaw': Parameter.Type.DOUBLE_ARRAY, 'odom_noise_trans': Parameter.Type.DOUBLE, 'odom_noise_rot': Parameter.Type.DOUBLE, 'sensor_noise_range': Parameter.Type.DOUBLE, 'sensor_noise_bearing': Parameter.Type.DOUBLE, 'min_resample_neff_ratio': Parameter.Type.DOUBLE, 'min_odom_travel_before_updates_m': Parameter.Type.DOUBLE, 'publish_rate_hz': Parameter.Type.DOUBLE, 'map_frame': Parameter.Type.STRING, 'path_max_poses': Parameter.Type.INTEGER, 'camera_image_topic': Parameter.Type.STRING, 'camera_image_width': Parameter.Type.INTEGER, 'camera_image_height': Parameter.Type.INTEGER, 'camera_horizontal_fov': Parameter.Type.DOUBLE, 'camera_yaw_offset': Parameter.Type.DOUBLE, 'seed_particles_from_odom': Parameter.Type.BOOL, 'init_std_x': Parameter.Type.DOUBLE, 'init_std_y': Parameter.Type.DOUBLE, 'init_std_yaw': Parameter.Type.DOUBLE}
 
     def __init__(self) -> None:
         super().__init__('pf_node')
@@ -170,6 +170,7 @@ class ParticleFilterNode(Node):
         self._load_parameters()
         self.pf = ParticleFilter(num_particles=self.num_particles, room_bounds=(self.room_min_x, self.room_max_x, self.room_min_y, self.room_max_y), tag_positions=list(zip(self.tag_x, self.tag_y)), odom_noise_trans=self.odom_noise_trans, odom_noise_rot=self.odom_noise_rot, sensor_noise_range=self.sensor_noise_range, sensor_noise_bearing=self.sensor_noise_bearing, min_resample_neff_ratio=self.min_resample_neff_ratio)
         self.last_odom: Optional[Odometry] = None
+        self._odom_travel_m = 0.0
         self._particles_seeded_from_odom = not self.seed_particles_from_odom
         self.odom_path_poses: List[PoseStamped] = []
         self.pf_path_poses: List[PoseStamped] = []
@@ -212,6 +213,9 @@ class ParticleFilterNode(Node):
         self.sensor_noise_range = float(self.get_parameter('sensor_noise_range').value)
         self.sensor_noise_bearing = float(self.get_parameter('sensor_noise_bearing').value)
         self.min_resample_neff_ratio = float(self.get_parameter('min_resample_neff_ratio').value)
+        self.min_odom_travel_before_updates_m = float(
+            self.get_parameter('min_odom_travel_before_updates_m').value
+        )
         self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
         self.map_frame = str(self.get_parameter('map_frame').value)
         self.path_max_poses = int(self.get_parameter('path_max_poses').value)
@@ -270,6 +274,9 @@ class ParticleFilterNode(Node):
             self._particles_seeded_from_odom = True
             self.get_logger().info(f'Seeded {self.num_particles} particles from odometry at ({x:.2f}, {y:.2f}, {yaw:.2f} rad)')
         if self.last_odom is not None:
+            dx = msg.pose.pose.position.x - self.last_odom.pose.pose.position.x
+            dy = msg.pose.pose.position.y - self.last_odom.pose.pose.position.y
+            self._odom_travel_m += math.hypot(dx, dy)
             delta = self._odom_delta(self.last_odom, msg)
             self.pf.predict(delta)
         self._record_odom_path_pose(msg)
@@ -321,8 +328,13 @@ class ParticleFilterNode(Node):
         self.annotated_image_pub.publish(out)
 
     def apply_tag_observation(self, observation: TagObservation) -> None:
+        if self._odom_travel_m < self.min_odom_travel_before_updates_m:
+            return
         self.pf.update(observation)
         self.pf.resample_if_needed()
+
+    def _tag_on_east_west_wall(self, tx: float) -> bool:
+        return abs(tx - self.room_min_x) < 1e-3 or abs(tx - self.room_max_x) < 1e-3
 
     @staticmethod
     def _weight_to_color(weight_norm: float) -> Tuple[float, float, float, float]:
@@ -388,10 +400,15 @@ class ParticleFilterNode(Node):
             tag.pose.position.x = float(tx)
             tag.pose.position.y = float(ty)
             tag.pose.position.z = 0.2
-            tag.pose.orientation.w = 1.0
-            tag.scale.x = self.tag_size_m
-            tag.scale.y = 0.02
-            tag.scale.z = self.tag_size_m
+            tag.pose.orientation = yaw_to_quaternion(float(self.tag_yaw[idx]))
+            if self._tag_on_east_west_wall(float(tx)):
+                tag.scale.x = 0.02
+                tag.scale.y = self.tag_size_m
+                tag.scale.z = self.tag_size_m
+            else:
+                tag.scale.x = self.tag_size_m
+                tag.scale.y = 0.02
+                tag.scale.z = self.tag_size_m
             tag.color.r = 0.95
             tag.color.g = 0.85
             tag.color.b = 0.1

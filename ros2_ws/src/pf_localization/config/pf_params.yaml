@@ -20,6 +20,7 @@ pf_node:
     sensor_noise_bearing: 0.12
 
     min_resample_neff_ratio: 0.5
+    min_odom_travel_before_updates_m: 0.15
 
     seed_particles_from_odom: false
     init_std_x: 0.35

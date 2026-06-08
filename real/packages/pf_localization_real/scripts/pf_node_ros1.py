@@ -179,6 +179,7 @@ class ParticleFilterNodeROS1:
         self._load_parameters()
         self.pf = ParticleFilter(num_particles=self.num_particles, room_bounds=(self.room_min_x, self.room_max_x, self.room_min_y, self.room_max_y), tag_positions=list(zip(self.tag_x, self.tag_y)), odom_noise_trans=self.odom_noise_trans, odom_noise_rot=self.odom_noise_rot, sensor_noise_range=self.sensor_noise_range, sensor_noise_bearing=self.sensor_noise_bearing, min_resample_neff_ratio=self.min_resample_neff_ratio)
         self.last_pose: Optional[Pose2DStamped] = None
+        self._odom_travel_m = 0.0
         self._particles_seeded_from_odom = not self.seed_particles_from_odom
         self.odom_path_poses: List[PoseStamped] = []
         self.pf_path_poses: List[PoseStamped] = []
@@ -222,6 +223,9 @@ class ParticleFilterNodeROS1:
         self.sensor_noise_range = float(rospy.get_param('~sensor_noise_range', 0.25))
         self.sensor_noise_bearing = float(rospy.get_param('~sensor_noise_bearing', 0.12))
         self.min_resample_neff_ratio = float(rospy.get_param('~min_resample_neff_ratio', 0.5))
+        self.min_odom_travel_before_updates_m = float(
+            rospy.get_param('~min_odom_travel_before_updates_m', 0.15)
+        )
         self.publish_rate_hz = float(rospy.get_param('~publish_rate_hz', 10.0))
         self.map_frame = str(rospy.get_param('~map_frame', 'odom'))
         self.path_max_poses = int(rospy.get_param('~path_max_poses', 0))
@@ -279,6 +283,9 @@ class ParticleFilterNodeROS1:
             self._particles_seeded_from_odom = True
             rospy.loginfo('Seeded %d particles from pose at (%.2f, %.2f, %.2f rad)', self.num_particles, msg.x, msg.y, msg.theta)
         if self.last_pose is not None:
+            dx = msg.x - self.last_pose.x
+            dy = msg.y - self.last_pose.y
+            self._odom_travel_m += math.hypot(dx, dy)
             delta = self._pose_delta(self.last_pose, msg)
             self.pf.predict(delta)
         self._record_odom_path_pose(msg)
@@ -339,8 +346,13 @@ class ParticleFilterNodeROS1:
         self.annotated_image_pub.publish(out)
 
     def apply_tag_observation(self, observation: TagObservation) -> None:
+        if self._odom_travel_m < self.min_odom_travel_before_updates_m:
+            return
         self.pf.update(observation)
         self.pf.resample_if_needed()
+
+    def _tag_on_east_west_wall(self, tx: float) -> bool:
+        return abs(tx - self.room_min_x) < 1e-3 or abs(tx - self.room_max_x) < 1e-3
 
     @staticmethod
     def _weight_to_color(weight_norm: float) -> Tuple[float, float, float, float]:
@@ -406,10 +418,15 @@ class ParticleFilterNodeROS1:
             tag.pose.position.x = float(tx)
             tag.pose.position.y = float(ty)
             tag.pose.position.z = 0.2
-            tag.pose.orientation.w = 1.0
-            tag.scale.x = self.tag_size_m
-            tag.scale.y = 0.02
-            tag.scale.z = self.tag_size_m
+            tag.pose.orientation = yaw_to_quaternion(float(self.tag_yaw[idx]))
+            if self._tag_on_east_west_wall(float(tx)):
+                tag.scale.x = 0.02
+                tag.scale.y = self.tag_size_m
+                tag.scale.z = self.tag_size_m
+            else:
+                tag.scale.x = self.tag_size_m
+                tag.scale.y = 0.02
+                tag.scale.z = self.tag_size_m
             tag.color.r = 0.95
             tag.color.g = 0.85
             tag.color.b = 0.1
