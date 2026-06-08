@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import math
+import random
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
+import cv2
+import rclpy
+from rclpy.parameter import Parameter
+from cv_bridge import CvBridge
+from geometry_msgs.msg import Point, Pose, PoseArray, PoseStamped, Quaternion
+from nav_msgs.msg import Odometry, Path
+from visualization_msgs.msg import Marker, MarkerArray
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+REQUIRED_TAG_COUNT = 8
+
+def normalize_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+def yaw_to_quaternion(yaw: float) -> Quaternion:
+    q = Quaternion()
+    q.x = 0.0
+    q.y = 0.0
+    q.z = math.sin(yaw * 0.5)
+    q.w = math.cos(yaw * 0.5)
+    return q
+
+@dataclass
+class Particle:
+    x: float
+    y: float
+    theta: float
+    weight: float
+
+@dataclass
+class TagObservation:
+    range: float
+    bearing_world: float
+
+@dataclass
+class OdomDelta:
+    dx_body: float
+    dy_body: float
+    dtheta: float
+
+class ParticleFilter:
+
+    def __init__(self, num_particles: int, room_bounds: Tuple[float, float, float, float], tag_positions: Sequence[Tuple[float, float]], odom_noise_trans: float, odom_noise_rot: float, sensor_noise_range: float, sensor_noise_bearing: float, min_resample_neff_ratio: float) -> None:
+        self.num_particles = num_particles
+        (self.room_min_x, self.room_max_x, self.room_min_y, self.room_max_y) = room_bounds
+        self.tag_positions = list(tag_positions)
+        self.odom_noise_trans = odom_noise_trans
+        self.odom_noise_rot = odom_noise_rot
+        self.sensor_noise_range = sensor_noise_range
+        self.sensor_noise_bearing = sensor_noise_bearing
+        self.min_resample_neff_ratio = min_resample_neff_ratio
+        if len(self.tag_positions) != REQUIRED_TAG_COUNT:
+            raise ValueError(f'Expected exactly {REQUIRED_TAG_COUNT} tag positions for multi-hypothesis model.')
+        self.particles: List[Particle] = []
+        self._initialize_particles_uniform()
+
+    def _initialize_particles_uniform(self) -> None:
+        weight = 1.0 / self.num_particles
+        self.particles = []
+        for _ in range(self.num_particles):
+            x = random.uniform(self.room_min_x, self.room_max_x)
+            y = random.uniform(self.room_min_y, self.room_max_y)
+            theta = random.uniform(-math.pi, math.pi)
+            self.particles.append(Particle(x, y, theta, weight))
+
+    def predict(self, delta: OdomDelta) -> None:
+        for p in self.particles:
+            noisy_dx = delta.dx_body + random.gauss(0.0, self.odom_noise_trans)
+            noisy_dy = delta.dy_body + random.gauss(0.0, self.odom_noise_trans)
+            noisy_dtheta = delta.dtheta + random.gauss(0.0, self.odom_noise_rot)
+            p.x += noisy_dx * math.cos(p.theta) - noisy_dy * math.sin(p.theta)
+            p.y += noisy_dx * math.sin(p.theta) + noisy_dy * math.cos(p.theta)
+            p.theta = normalize_angle(p.theta + noisy_dtheta)
+            p.x = min(max(p.x, self.room_min_x), self.room_max_x)
+            p.y = min(max(p.y, self.room_min_y), self.room_max_y)
+
+    def reinitialize_gaussian(self, x: float, y: float, theta: float, std_x: float, std_y: float, std_theta: float) -> None:
+        weight = 1.0 / self.num_particles
+        self.particles = []
+        for _ in range(self.num_particles):
+            px = random.gauss(x, std_x)
+            py = random.gauss(y, std_y)
+            ptheta = normalize_angle(random.gauss(theta, std_theta))
+            px = min(max(px, self.room_min_x), self.room_max_x)
+            py = min(max(py, self.room_min_y), self.room_max_y)
+            self.particles.append(Particle(px, py, ptheta, weight))
+
+    def _likelihood_given_tag(self, particle: Particle, observation: TagObservation, tag_x: float, tag_y: float) -> float:
+        dx = tag_x - particle.x
+        dy = tag_y - particle.y
+        expected_range = math.hypot(dx, dy)
+        expected_bearing_world = math.atan2(dy, dx)
+        range_err = observation.range - expected_range
+        bearing_err = normalize_angle(observation.bearing_world - expected_bearing_world)
+        range_var = self.sensor_noise_range ** 2
+        bearing_var = self.sensor_noise_bearing ** 2
+        exponent = -0.5 * (range_err * range_err / range_var + bearing_err * bearing_err / bearing_var)
+        return math.exp(exponent)
+
+    def measurement_likelihood(self, particle: Particle, observation: TagObservation) -> float:
+        total = 0.0
+        for (tag_x, tag_y) in self.tag_positions:
+            total += self._likelihood_given_tag(particle, observation, tag_x, tag_y)
+        return total
+
+    def update(self, observation: TagObservation) -> None:
+        for p in self.particles:
+            p.weight *= self.measurement_likelihood(p, observation)
+        self._normalize_weights()
+
+    def _normalize_weights(self) -> None:
+        total = sum((p.weight for p in self.particles))
+        if total <= 0.0:
+            uniform = 1.0 / self.num_particles
+            for p in self.particles:
+                p.weight = uniform
+            return
+        for p in self.particles:
+            p.weight /= total
+
+    def effective_sample_size(self) -> float:
+        return 1.0 / sum((p.weight * p.weight for p in self.particles))
+
+    def resample_if_needed(self) -> None:
+        neff = self.effective_sample_size()
+        if neff >= self.min_resample_neff_ratio * self.num_particles:
+            return
+        self._low_variance_resample()
+
+    def _low_variance_resample(self) -> None:
+        weights = [p.weight for p in self.particles]
+        n = self.num_particles
+        new_particles: List[Particle] = []
+        r = random.uniform(0.0, 1.0 / n)
+        c = weights[0]
+        i = 0
+        for m in range(n):
+            u = r + m * (1.0 / n)
+            while u > c and i < n - 1:
+                i += 1
+                c += weights[i]
+            sampled = self.particles[i]
+            new_particles.append(Particle(sampled.x, sampled.y, sampled.theta, 1.0 / n))
+        self.particles = new_particles
+
+    def estimated_pose(self) -> Tuple[float, float, float]:
+        x = sum((p.x * p.weight for p in self.particles))
+        y = sum((p.y * p.weight for p in self.particles))
+        sin_sum = sum((math.sin(p.theta) * p.weight for p in self.particles))
+        cos_sum = sum((math.cos(p.theta) * p.weight for p in self.particles))
+        theta = math.atan2(sin_sum, cos_sum)
+        return (x, y, theta)
+
+class ParticleFilterNode(Node):
+    _PARAMETER_TYPES = {'num_particles': Parameter.Type.INTEGER, 'room_min_x': Parameter.Type.DOUBLE, 'room_max_x': Parameter.Type.DOUBLE, 'room_min_y': Parameter.Type.DOUBLE, 'room_max_y': Parameter.Type.DOUBLE, 'tag_size_m': Parameter.Type.DOUBLE, 'tag_x': Parameter.Type.DOUBLE_ARRAY, 'tag_y': Parameter.Type.DOUBLE_ARRAY, 'tag_yaw': Parameter.Type.DOUBLE_ARRAY, 'odom_noise_trans': Parameter.Type.DOUBLE, 'odom_noise_rot': Parameter.Type.DOUBLE, 'sensor_noise_range': Parameter.Type.DOUBLE, 'sensor_noise_bearing': Parameter.Type.DOUBLE, 'min_resample_neff_ratio': Parameter.Type.DOUBLE, 'publish_rate_hz': Parameter.Type.DOUBLE, 'map_frame': Parameter.Type.STRING, 'path_max_poses': Parameter.Type.INTEGER, 'camera_image_topic': Parameter.Type.STRING, 'camera_image_width': Parameter.Type.INTEGER, 'camera_image_height': Parameter.Type.INTEGER, 'camera_horizontal_fov': Parameter.Type.DOUBLE, 'camera_yaw_offset': Parameter.Type.DOUBLE, 'seed_particles_from_odom': Parameter.Type.BOOL, 'init_std_x': Parameter.Type.DOUBLE, 'init_std_y': Parameter.Type.DOUBLE, 'init_std_yaw': Parameter.Type.DOUBLE}
+
+    def __init__(self) -> None:
+        super().__init__('pf_node')
+        self._declare_parameters()
+        self._load_parameters()
+        self.pf = ParticleFilter(num_particles=self.num_particles, room_bounds=(self.room_min_x, self.room_max_x, self.room_min_y, self.room_max_y), tag_positions=list(zip(self.tag_x, self.tag_y)), odom_noise_trans=self.odom_noise_trans, odom_noise_rot=self.odom_noise_rot, sensor_noise_range=self.sensor_noise_range, sensor_noise_bearing=self.sensor_noise_bearing, min_resample_neff_ratio=self.min_resample_neff_ratio)
+        self.last_odom: Optional[Odometry] = None
+        self._particles_seeded_from_odom = not self.seed_particles_from_odom
+        self.odom_path_poses: List[PoseStamped] = []
+        self.pf_path_poses: List[PoseStamped] = []
+        self.bridge = CvBridge()
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
+        if hasattr(cv2.aruco, 'DetectorParameters'):
+            self.aruco_params = cv2.aruco.DetectorParameters()
+        else:
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.image_sub = self.create_subscription(Image, self.camera_image_topic, self.image_callback, 10)
+        self.particles_pub = self.create_publisher(PoseArray, '/particles', 10)
+        self.particle_markers_pub = self.create_publisher(MarkerArray, '/particle_markers', 10)
+        self.tag_markers_pub = self.create_publisher(MarkerArray, '/tag_markers', 10)
+        self.estimated_pose_pub = self.create_publisher(PoseStamped, '/estimated_pose', 10)
+        self.annotated_image_pub = self.create_publisher(Image, '/camera/image_annotated', 10)
+        self.odom_path_pub = self.create_publisher(Path, '/odom_path', 10)
+        self.pf_path_pub = self.create_publisher(Path, '/pf_path', 10)
+        publish_period = 1.0 / self.publish_rate_hz
+        self.viz_timer = self.create_timer(publish_period, self.publish_visualization)
+        init_mode = 'odometry seed' if self.seed_particles_from_odom else 'uniform (unknown pose)'
+        self.get_logger().info(f'Particle filter ready: N={self.num_particles}, room=[{self.room_min_x},{self.room_max_x}]x[{self.room_min_y},{self.room_max_y}], {REQUIRED_TAG_COUNT} tag hypotheses, init={init_mode}')
+
+    def _declare_parameters(self) -> None:
+        for (name, param_type) in self._PARAMETER_TYPES.items():
+            self.declare_parameter(name, param_type)
+
+    def _load_parameters(self) -> None:
+        self.num_particles = int(self.get_parameter('num_particles').value)
+        self.room_min_x = float(self.get_parameter('room_min_x').value)
+        self.room_max_x = float(self.get_parameter('room_max_x').value)
+        self.room_min_y = float(self.get_parameter('room_min_y').value)
+        self.room_max_y = float(self.get_parameter('room_max_y').value)
+        self.tag_size_m = float(self.get_parameter('tag_size_m').value)
+        self.tag_x = list(self.get_parameter('tag_x').value)
+        self.tag_y = list(self.get_parameter('tag_y').value)
+        self.tag_yaw = list(self.get_parameter('tag_yaw').value)
+        self.odom_noise_trans = float(self.get_parameter('odom_noise_trans').value)
+        self.odom_noise_rot = float(self.get_parameter('odom_noise_rot').value)
+        self.sensor_noise_range = float(self.get_parameter('sensor_noise_range').value)
+        self.sensor_noise_bearing = float(self.get_parameter('sensor_noise_bearing').value)
+        self.min_resample_neff_ratio = float(self.get_parameter('min_resample_neff_ratio').value)
+        self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
+        self.map_frame = str(self.get_parameter('map_frame').value)
+        self.path_max_poses = int(self.get_parameter('path_max_poses').value)
+        self.camera_image_topic = str(self.get_parameter('camera_image_topic').value)
+        self.camera_image_width = int(self.get_parameter('camera_image_width').value)
+        self.camera_image_height = int(self.get_parameter('camera_image_height').value)
+        self.camera_horizontal_fov = float(self.get_parameter('camera_horizontal_fov').value)
+        self.camera_yaw_offset = float(self.get_parameter('camera_yaw_offset').value)
+        self.seed_particles_from_odom = bool(self.get_parameter('seed_particles_from_odom').value)
+        self.init_std_x = float(self.get_parameter('init_std_x').value)
+        self.init_std_y = float(self.get_parameter('init_std_y').value)
+        self.init_std_yaw = float(self.get_parameter('init_std_yaw').value)
+        if len(self.tag_x) != REQUIRED_TAG_COUNT or len(self.tag_y) != REQUIRED_TAG_COUNT:
+            raise ValueError(f'tag_x and tag_y must each have length {REQUIRED_TAG_COUNT}; got {len(self.tag_x)} and {len(self.tag_y)}')
+        if len(self.tag_yaw) != REQUIRED_TAG_COUNT:
+            raise ValueError(f'tag_yaw must have length {REQUIRED_TAG_COUNT}; got {len(self.tag_yaw)}')
+        half_w = self.camera_image_width * 0.5
+        self._camera_fx = half_w / math.tan(self.camera_horizontal_fov * 0.5)
+        self._camera_cx = half_w
+
+    def _trim_path_history(self, history: List[PoseStamped]) -> None:
+        if self.path_max_poses > 0 and len(history) > self.path_max_poses:
+            del history[:-self.path_max_poses]
+
+    def _record_odom_path_pose(self, msg: Odometry) -> None:
+        pose = PoseStamped()
+        pose.header.stamp = msg.header.stamp
+        pose.header.frame_id = self.map_frame
+        pose.pose = msg.pose.pose
+        self.odom_path_poses.append(pose)
+        self._trim_path_history(self.odom_path_poses)
+
+    @staticmethod
+    def _odom_delta(prev: Odometry, curr: Odometry) -> OdomDelta:
+        dx = curr.pose.pose.position.x - prev.pose.pose.position.x
+        dy = curr.pose.pose.position.y - prev.pose.pose.position.y
+        prev_yaw = ParticleFilterNode._yaw_from_quaternion(prev.pose.pose.orientation)
+        curr_yaw = ParticleFilterNode._yaw_from_quaternion(curr.pose.pose.orientation)
+        dtheta = normalize_angle(curr_yaw - prev_yaw)
+        dx_body = math.cos(prev_yaw) * dx + math.sin(prev_yaw) * dy
+        dy_body = -math.sin(prev_yaw) * dx + math.cos(prev_yaw) * dy
+        return OdomDelta(dx_body, dy_body, dtheta)
+
+    @staticmethod
+    def _yaw_from_quaternion(q: Quaternion) -> float:
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    def odom_callback(self, msg: Odometry) -> None:
+        if not self._particles_seeded_from_odom and self.seed_particles_from_odom:
+            x = msg.pose.pose.position.x
+            y = msg.pose.pose.position.y
+            yaw = self._yaw_from_quaternion(msg.pose.pose.orientation)
+            self.pf.reinitialize_gaussian(x, y, yaw, self.init_std_x, self.init_std_y, self.init_std_yaw)
+            self._particles_seeded_from_odom = True
+            self.get_logger().info(f'Seeded {self.num_particles} particles from odometry at ({x:.2f}, {y:.2f}, {yaw:.2f} rad)')
+        if self.last_odom is not None:
+            delta = self._odom_delta(self.last_odom, msg)
+            self.pf.predict(delta)
+        self._record_odom_path_pose(msg)
+        self.last_odom = msg
+
+    @staticmethod
+    def _marker_pixel_metrics(corners) -> Tuple[float, float, float]:
+        pts = corners[0]
+        us = [float(p[0]) for p in pts]
+        vs = [float(p[1]) for p in pts]
+        width_px = max(us) - min(us)
+        return (sum(us) / 4.0, sum(vs) / 4.0, width_px)
+
+    def _range_from_pixel_width(self, pixel_width: float) -> float:
+        if pixel_width < 1.0:
+            return float('inf')
+        return self._camera_fx * self.tag_size_m / pixel_width
+
+    def _bearing_camera_frame(self, center_u: float) -> float:
+        return math.atan2(center_u - self._camera_cx, self._camera_fx)
+
+    def image_callback(self, msg: Image) -> None:
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception as exc:
+            self.get_logger().warn(f'cv_bridge conversion failed: {exc}')
+            return
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        (corners, ids, _) = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.aruco_params)
+        annotated = frame.copy()
+        if self.last_odom is None:
+            out = self.bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+            out.header = msg.header
+            self.annotated_image_pub.publish(out)
+            return
+        odom_yaw = self._yaw_from_quaternion(self.last_odom.pose.pose.orientation)
+        if ids is not None and len(corners) > 0:
+            cv2.aruco.drawDetectedMarkers(annotated, corners, ids)
+            for marker_corners in corners:
+                (center_u, _, width_px) = self._marker_pixel_metrics(marker_corners)
+                range_m = self._range_from_pixel_width(width_px)
+                bearing_cam = self._bearing_camera_frame(center_u)
+                bearing_world = normalize_angle(odom_yaw + bearing_cam + self.camera_yaw_offset)
+                if not math.isfinite(range_m) or range_m <= 0.0:
+                    continue
+                self.apply_tag_observation(TagObservation(range_m, bearing_world))
+        out = self.bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+        out.header = msg.header
+        self.annotated_image_pub.publish(out)
+
+    def apply_tag_observation(self, observation: TagObservation) -> None:
+        self.pf.update(observation)
+        self.pf.resample_if_needed()
+
+    @staticmethod
+    def _weight_to_color(weight_norm: float) -> Tuple[float, float, float, float]:
+        w = min(max(weight_norm, 0.0), 1.0)
+        return (1.0 - w, w, 0.15, 0.25 + 0.75 * w)
+
+    def _make_particle_markers(self, stamp) -> MarkerArray:
+        markers = MarkerArray()
+        weights = [p.weight for p in self.pf.particles]
+        max_w = max(weights) if weights else 1.0
+        if max_w <= 0.0:
+            max_w = 1.0
+        for (idx, p) in enumerate(self.pf.particles):
+            w_norm = p.weight / max_w
+            (r, g, b, a) = self._weight_to_color(w_norm)
+            m = Marker()
+            m.header.stamp = stamp
+            m.header.frame_id = self.map_frame
+            m.ns = 'particles'
+            m.id = idx
+            m.type = Marker.ARROW
+            m.action = Marker.ADD
+            m.pose.position.x = p.x
+            m.pose.position.y = p.y
+            m.pose.position.z = 0.02
+            m.pose.orientation = yaw_to_quaternion(p.theta)
+            m.scale.x = 0.12 + 0.08 * w_norm
+            m.scale.y = 0.04 + 0.02 * w_norm
+            m.scale.z = 0.04
+            m.color.r = float(r)
+            m.color.g = float(g)
+            m.color.b = float(b)
+            m.color.a = float(a)
+            markers.markers.append(m)
+        return markers
+
+    def _make_tag_and_room_markers(self, stamp) -> MarkerArray:
+        markers = MarkerArray()
+        (x0, x1) = (self.room_min_x, self.room_max_x)
+        (y0, y1) = (self.room_min_y, self.room_max_y)
+        room = Marker()
+        room.header.stamp = stamp
+        room.header.frame_id = self.map_frame
+        room.ns = 'room'
+        room.id = 0
+        room.type = Marker.LINE_STRIP
+        room.action = Marker.ADD
+        room.scale.x = 0.03
+        room.color.r = 0.6
+        room.color.g = 0.6
+        room.color.b = 0.6
+        room.color.a = 1.0
+        room.points = [Point(x=x0, y=y0, z=0.01), Point(x=x1, y=y0, z=0.01), Point(x=x1, y=y1, z=0.01), Point(x=x0, y=y1, z=0.01), Point(x=x0, y=y0, z=0.01)]
+        markers.markers.append(room)
+        for (idx, (tx, ty)) in enumerate(zip(self.tag_x, self.tag_y)):
+            tag = Marker()
+            tag.header.stamp = stamp
+            tag.header.frame_id = self.map_frame
+            tag.ns = 'ar_tags'
+            tag.id = idx
+            tag.type = Marker.CUBE
+            tag.action = Marker.ADD
+            tag.pose.position.x = float(tx)
+            tag.pose.position.y = float(ty)
+            tag.pose.position.z = 0.2
+            tag.pose.orientation.w = 1.0
+            tag.scale.x = self.tag_size_m
+            tag.scale.y = 0.02
+            tag.scale.z = self.tag_size_m
+            tag.color.r = 0.95
+            tag.color.g = 0.85
+            tag.color.b = 0.1
+            tag.color.a = 0.85
+            markers.markers.append(tag)
+            label = Marker()
+            label.header.stamp = stamp
+            label.header.frame_id = self.map_frame
+            label.ns = 'ar_tag_labels'
+            label.id = idx
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = float(tx)
+            label.pose.position.y = float(ty)
+            label.pose.position.z = 0.35
+            label.scale.z = 0.12
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 0.9
+            label.text = f'T{idx + 1}'
+            markers.markers.append(label)
+        return markers
+
+    def publish_visualization(self) -> None:
+        stamp = self.get_clock().now().to_msg()
+        cloud = PoseArray()
+        cloud.header.stamp = stamp
+        cloud.header.frame_id = self.map_frame
+        for p in self.pf.particles:
+            pose = Pose()
+            pose.position.x = p.x
+            pose.position.y = p.y
+            pose.position.z = 0.0
+            pose.orientation = yaw_to_quaternion(p.theta)
+            cloud.poses.append(pose)
+        self.particles_pub.publish(cloud)
+        self.particle_markers_pub.publish(self._make_particle_markers(stamp))
+        self.tag_markers_pub.publish(self._make_tag_and_room_markers(stamp))
+        (est_x, est_y, est_theta) = self.pf.estimated_pose()
+        estimate = PoseStamped()
+        estimate.header.stamp = stamp
+        estimate.header.frame_id = self.map_frame
+        estimate.pose.position.x = est_x
+        estimate.pose.position.y = est_y
+        estimate.pose.position.z = 0.0
+        estimate.pose.orientation = yaw_to_quaternion(est_theta)
+        self.estimated_pose_pub.publish(estimate)
+        self.pf_path_poses.append(estimate)
+        self._trim_path_history(self.pf_path_poses)
+        odom_path = Path()
+        odom_path.header.stamp = stamp
+        odom_path.header.frame_id = self.map_frame
+        odom_path.poses = list(self.odom_path_poses)
+        self.odom_path_pub.publish(odom_path)
+        pf_path = Path()
+        pf_path.header.stamp = stamp
+        pf_path.header.frame_id = self.map_frame
+        pf_path.poses = list(self.pf_path_poses)
+        self.pf_path_pub.publish(pf_path)
+
+def main(args: Optional[List[str]]=None) -> None:
+    rclpy.init(args=args)
+    node = ParticleFilterNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+if __name__ == '__main__':
+    main()

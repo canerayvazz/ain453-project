@@ -1,0 +1,162 @@
+<?xml version="1.0"?>
+<robot name="duckiebot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:property name="cameraMass" value="0.01"/>
+  <xacro:property name="compuMass" value="0.01"/>
+
+  <xacro:property name="chassisMass" value="0.15"/>
+
+  <xacro:property name="wheelMass" value="0.05"/>
+  <xacro:property name="wheelRadius" value="0.032"/>
+  <xacro:property name="wheelWidth" value="0.018"/>
+
+  <xacro:include filename="$(find pf_localization)/urdf/duckiebot.gazebo"/>
+  <xacro:include filename="$(find pf_localization)/urdf/materials.xacro"/>
+  <xacro:include filename="$(find pf_localization)/urdf/macros.xacro"/>
+
+  <link name="chassis">
+    <inertial>
+      <mass value="${chassisMass}"/>
+      <origin xyz="-0.05 0 0" rpy="0 0 0"/>
+      <inertia
+        ixx="1.56167e-05" ixy="0.0" ixz="0.0"
+        iyy="1.56167e-05" iyz="0.0"
+        izz="2.56e-05"/>
+    </inertial>
+
+    <collision name="collision">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebotFrame.dae"/>
+      </geometry>
+    </collision>
+
+    <visual name="chassis_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebotFrame.dae"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
+
+  <link name="left_wheel">
+    
+    <collision name="collision">
+      <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+      <geometry>
+        <cylinder radius="${wheelRadius}" length="${wheelWidth}"/>
+      </geometry>
+    </collision>
+    <visual name="left_wheel_visual">
+      <origin xyz="0 -0.07 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebot_leftwheel.dae"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${wheelMass}"/>
+      <inertia
+        ixx="5.6167e-06" ixy="0.0" ixz="0.0"
+        iyy="5.6167e-06" iyz="0.0"
+        izz="1.56e-05"/>
+    </inertial>
+  </link>
+
+  <link name="right_wheel">
+    <collision name="collision">
+      <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+      <geometry>
+        <cylinder radius="${wheelRadius}" length="${wheelWidth}"/>
+      </geometry>
+    </collision>
+    <visual name="right_wheel_visual">
+      <origin xyz="0 0.07 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebot_rightwheel.dae"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${wheelMass}"/>
+      <inertia
+        ixx="5.6167e-06" ixy="0.0" ixz="0.0"
+        iyy="5.6167e-06" iyz="0.0"
+        izz="1.56e-05"/>
+    </inertial>
+  </link>
+
+  <joint name="left_wheel_hinge" type="continuous">
+    <origin xyz="0.0 0.07 0" rpy="0 0 0"/>
+    <parent link="chassis"/>
+    <child link="left_wheel"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="100" velocity="100"/>
+  </joint>
+
+  <joint name="right_wheel_hinge" type="continuous">
+    <origin xyz="0.0 -0.07 0" rpy="0 0 0"/>
+    <parent link="chassis"/>
+    <child link="right_wheel"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="100" velocity="100"/>
+  </joint>
+
+  <link name="computer">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebot_computer.dae"/>
+      </geometry>
+    </collision>
+    <visual name="comp_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebot_computer.dae"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <inertial>
+      <mass value="${compuMass}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+
+  <joint name="computer_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="chassis"/>
+    <child link="computer"/>
+  </joint>
+
+  <link name="camera">
+    <collision>
+      <origin xyz="-0.05 0 -0.055" rpy="0 -0.1 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebot_camera.dae"/>
+      </geometry>
+    </collision>
+    <visual name="camvisual">
+      <origin xyz="-0.05 0 -0.055" rpy="0 -0.1 0"/>
+      <geometry>
+        <mesh filename="package://pf_localization/meshes/duckiebot_camera.dae"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <inertial>
+      <mass value="${cameraMass}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <origin xyz="0.05 0 0.05" rpy="0 0.1 0"/>
+    <parent link="chassis"/>
+    <child link="camera"/>
+  </joint>
+
+</robot>

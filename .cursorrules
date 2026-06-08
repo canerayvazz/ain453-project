@@ -1,0 +1,35 @@
+# Project Context & Core Directives
+- ALWAYS read and refer to `Project.pdf` (Particle Filter Localization with AR Tags in Simulation) for strict academic requirements and constraints.
+- The goal is to implement a Particle Filter to estimate the pose of a mobile robot inside a simulated Gazebo environment.
+
+# Coding Standards & Architecture
+- Environment Assumption: Ubuntu 22.04, ROS 2 Humble, Gazebo Classic.
+- Language/Framework: Python 3 using `rclpy` (Avoid C++ unless strictly necessary for performance).
+- Avoid hardcoding. Write **configurable and parametric** code. Project parameters (room dimensions, tag sizes, tag coordinates, particle counts, motion/sensor noise covariances) MUST be read from a configuration file (e.g., ROS 2 parameter files `.yaml`).
+- Optimize code for real-time visualization performance.
+
+# Strict Logical & Mathematical Constraints (CRITICAL)
+- ALL 8 AR tags share the EXACT SAME ID. The robot does NOT know which physical tag it is observing.
+- MULTI-HYPOTHESIS SENSOR MODEL: For each particle, the likelihood of an observation must be computed by summing over all 8 tag hypotheses.
+- Likelihood Formula: p(z|x_particle) = sum(p(z|x_particle, tag_i)) for i=1 to 8.
+- DO NOT SHORTCUT: Never simplify the observation likelihood by picking only the "nearest" tag to the particle. This is strictly forbidden by the project rules and will break the filter.
+
+# Visualization & Outputs
+- The system must output a real-time visualization (e.g., RViz2) showing:
+  1. The room layout and 8 AR tag positions.
+  2. The particle cloud (colored/styled by weight).
+  3. The odometry-only trajectory.
+  4. The particle filter estimated trajectory (weighted mean).
+
+# Defined Project Parameters (Constants)
+- The following default parameters MUST be used as the baseline for configurations, launch files, and simulated environment generation.
+- Room Dimensions: 5.0 meters (X) by 4.0 meters (Y). The room is a closed rectangular environment.
+- AR Tag Size: 0.2 meters x 0.2 meters.
+- Robot Model: Duckiebot.
+- Base Particle Count (N): 500.
+- AR Tag Layout (8 tags total, 2 per wall, asymmetric, Z=0.2m):
+  1. North Wall (Y=4.0): Tag1 at X=1.0, Tag2 at X=3.5 (facing South)
+  2. South Wall (Y=0.0): Tag3 at X=0.5, Tag4 at X=4.0 (facing North)
+  3. East Wall (X=5.0): Tag5 at Y=1.5, Tag6 at Y=3.0 (facing West)
+  4. West Wall (X=0.0): Tag7 at Y=0.8, Tag8 at Y=3.2 (facing East)
+- All hardcoded default parameters must still be implemented in a configurable/parametric way (e.g., loaded via a `.yaml` parameter file), ensuring they can be easily modified later without changing the core source code.

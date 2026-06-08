@@ -1,0 +1,19 @@
+material Aruco/Marker
+{
+  technique
+  {
+    pass
+    {
+      ambient 1.0 1.0 1.0 1.0
+      diffuse 1.0 1.0 1.0 1.0
+      specular 0.0 0.0 0.0 1.0 1.0
+
+      texture_unit
+      {
+        texture aruco_marker.png
+        filtering trilinear
+        tex_address_mode clamp
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+<launch>
+
+  <arg name="veh" default="$(optenv VEHICLE_NAME wolf)"/>
+
+  <node pkg="pf_localization_real" type="pf_node_ros1.py" name="pf_node" output="screen">
+    <rosparam file="$(find pf_localization_real)/config/pf_params.yaml" command="load"/>
+    <param name="veh" value="$(arg veh)"/>
+    
+    <param name="camera_image_topic" value="/$(arg veh)/camera_node/image/compressed"/>
+    <param name="pose_topic" value="/$(arg veh)/kinematics_node/pose"/>
+  </node>
+</launch>

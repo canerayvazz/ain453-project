@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <gazebo>
+    <plugin name="differential_drive_controller" filename="libgazebo_ros_diff_drive.so">
+      <ros>
+        <remapping>cmd_vel:=/cmd_vel</remapping>
+        <remapping>odom:=/odom</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <left_joint>left_wheel_hinge</left_joint>
+      <right_joint>right_wheel_hinge</right_joint>
+      <wheel_separation>0.14</wheel_separation>
+      <wheel_diameter>0.064</wheel_diameter>
+      <max_wheel_torque>20</max_wheel_torque>
+      <max_wheel_acceleration>5.0</max_wheel_acceleration>
+      <cmd_vel_timeout>0.5</cmd_vel_timeout>
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <publish_wheel_tf>false</publish_wheel_tf>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>chassis</robot_base_frame>
+    </plugin>
+  </gazebo>
+
+  <gazebo reference="chassis">
+    <material>Gazebo/Orange</material>
+    <angular_damping>0.2</angular_damping>
+    <linear_damping>0.05</linear_damping>
+  </gazebo>
+
+  <gazebo reference="computer">
+    <material>Gazebo/Green</material>
+  </gazebo>
+
+  <gazebo reference="left_wheel">
+    <material>Gazebo/Black</material>
+    <mu1>0.9</mu1>
+    <mu2>0.9</mu2>
+    <kp>100000.0</kp>
+    <kd>10.0</kd>
+    <min_depth>0.001</min_depth>
+  </gazebo>
+
+  <gazebo reference="right_wheel">
+    <material>Gazebo/Black</material>
+    <mu1>0.9</mu1>
+    <mu2>0.9</mu2>
+    <kp>100000.0</kp>
+    <kd>10.0</kd>
+    <min_depth>0.001</min_depth>
+  </gazebo>
+
+  <gazebo reference="left_wheel_hinge">
+    <physics>
+      <ode>
+        <implicit_spring_damper>true</implicit_spring_damper>
+      </ode>
+    </physics>
+  </gazebo>
+
+  <gazebo reference="right_wheel_hinge">
+    <physics>
+      <ode>
+        <implicit_spring_damper>true</implicit_spring_damper>
+      </ode>
+    </physics>
+  </gazebo>
+
+  <gazebo reference="camera">
+    <material>Gazebo/Black</material>
+    <sensor type="camera" name="camera_sensor">
+      <update_rate>30.0</update_rate>
+      <camera name="camera">
+        <horizontal_fov>1.04</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>50</far>
+        </clip>
+      </camera>
+      <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
+        <ros>
+          <namespace>/camera</namespace>
+          <remapping>image_raw:=image_raw</remapping>
+          <remapping>camera_info:=camera_info</remapping>
+        </ros>
+        <frame_name>camera</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+</robot>
