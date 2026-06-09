@@ -7,6 +7,6 @@
     <param name="veh" value="$(arg veh)"/>
     
     <param name="camera_image_topic" value="/$(arg veh)/camera_node/image/compressed"/>
-    <param name="pose_topic" value="/$(arg veh)/kinematics_node/pose"/>
+    <param name="pose_topic" value="/$(arg veh)/velocity_to_pose_node/pose"/>
   </node>
 </launch>

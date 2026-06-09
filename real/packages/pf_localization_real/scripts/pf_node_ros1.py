@@ -172,6 +172,9 @@ class ParticleFilter:
         theta = math.atan2(sin_sum, cos_sum)
         return (x, y, theta)
 
+    def best_particle(self) -> Particle:
+        return max(self.particles, key=lambda p: p.weight)
+
 class ParticleFilterNodeROS1:
 
     def __init__(self) -> None:
@@ -189,10 +192,15 @@ class ParticleFilterNodeROS1:
             self.tag_detector_params = cv2.aruco.DetectorParameters()
         else:
             self.tag_detector_params = cv2.aruco.DetectorParameters_create()
+        self.tag_detector_params.minMarkerPerimeterRate = 0.01
+        subpix = getattr(cv2.aruco, 'CORNER_REFINE_SUBPIX', None)
+        if subpix is not None:
+            self.tag_detector_params.cornerRefinementMethod = subpix
         self.pose_sub = rospy.Subscriber(self.pose_topic, Pose2DStamped, self.pose_callback, queue_size=10)
         self.image_sub = rospy.Subscriber(self.camera_image_topic, CompressedImage, self.image_callback, queue_size=1)
         self.particles_pub = rospy.Publisher('/particles', PoseArray, queue_size=10)
         self.particle_markers_pub = rospy.Publisher('/particle_markers', MarkerArray, queue_size=10)
+        self.robot_markers_pub = rospy.Publisher('/robot_markers', MarkerArray, queue_size=10)
         self.tag_markers_pub = rospy.Publisher('/tag_markers', MarkerArray, queue_size=10)
         self.estimated_pose_pub = rospy.Publisher('/estimated_pose', PoseStamped, queue_size=10)
         self.annotated_image_pub = rospy.Publisher('/camera/image_annotated', Image, queue_size=1)
@@ -237,10 +245,14 @@ class ParticleFilterNodeROS1:
         self.camera_image_width = int(rospy.get_param('~camera_image_width', 640))
         self.camera_image_height = int(rospy.get_param('~camera_image_height', 480))
         self.camera_horizontal_fov = float(rospy.get_param('~camera_horizontal_fov', 1.04))
+        self.viz_particle_stride = max(1, int(rospy.get_param('~viz_particle_stride', 1)))
+        room_w = self.room_max_x - self.room_min_x
+        room_h = self.room_max_y - self.room_min_y
+        self._room_span = max(room_w, room_h, 0.1)
         cam_param = str(rospy.get_param('~camera_image_topic', '')).strip()
         pose_param = str(rospy.get_param('~pose_topic', '')).strip()
         self.camera_image_topic = cam_param or f'/{self.veh}/camera_node/image/compressed'
-        self.pose_topic = pose_param or f'/{self.veh}/kinematics_node/pose'
+        self.pose_topic = pose_param or f'/{self.veh}/velocity_to_pose_node/pose'
         if len(self.tag_x) != REQUIRED_TAG_COUNT or len(self.tag_y) != REQUIRED_TAG_COUNT:
             raise ValueError('tag_x and tag_y must each have length 8')
         if len(self.tag_yaw) != REQUIRED_TAG_COUNT:
@@ -288,6 +300,16 @@ class ParticleFilterNodeROS1:
             self._odom_travel_m += math.hypot(dx, dy)
             delta = self._pose_delta(self.last_pose, msg)
             self.pf.predict(delta)
+            rospy.loginfo_throttle(
+                2.0,
+                'Odom delta: dx_b=%.3f dy_b=%.3f dth=%.3f | travel=%.2fm',
+                delta.dx_body,
+                delta.dy_body,
+                delta.dtheta,
+                self._odom_travel_m,
+            )
+        else:
+            rospy.loginfo('First pose received: (%.3f, %.3f, %.3f rad)', msg.x, msg.y, msg.theta)
         self._record_odom_path_pose(msg)
         self.last_pose = msg
 
@@ -325,6 +347,9 @@ class ParticleFilterNodeROS1:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         (corners, ids, _) = cv2.aruco.detectMarkers(gray, self.tag_dict, parameters=self.tag_detector_params)
         annotated = frame.copy()
+        if ids is not None and len(corners) > 0:
+            cv2.aruco.drawDetectedMarkers(annotated, corners, ids)
+            rospy.loginfo_throttle(2.0, 'Detected %d tag36h11 marker(s)', len(corners))
         if self.last_pose is None:
             out = self.bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
             out.header = msg.header
@@ -332,7 +357,6 @@ class ParticleFilterNodeROS1:
             return
         odom_yaw = self.last_pose.theta
         if ids is not None and len(corners) > 0:
-            cv2.aruco.drawDetectedMarkers(annotated, corners, ids)
             for marker_corners in corners:
                 (center_u, _, width_px) = self._marker_pixel_metrics(marker_corners)
                 range_m = self._range_from_pixel_width(width_px)
@@ -365,28 +389,94 @@ class ParticleFilterNodeROS1:
         max_w = max(weights) if weights else 1.0
         if max_w <= 0.0:
             max_w = 1.0
+        arrow_len = self._room_span * 0.04
+        arrow_wid = self._room_span * 0.012
+        marker_id = 0
         for (idx, p) in enumerate(self.pf.particles):
+            if idx % self.viz_particle_stride != 0:
+                continue
             w_norm = p.weight / max_w
             (r, g, b, a) = self._weight_to_color(w_norm)
             m = Marker()
             m.header.stamp = stamp
             m.header.frame_id = self.map_frame
             m.ns = 'particles'
-            m.id = idx
+            m.id = marker_id
+            marker_id += 1
             m.type = Marker.ARROW
             m.action = Marker.ADD
             m.pose.position.x = p.x
             m.pose.position.y = p.y
-            m.pose.position.z = 0.02
+            m.pose.position.z = self._room_span * 0.005
             m.pose.orientation = yaw_to_quaternion(p.theta)
-            m.scale.x = 0.12 + 0.08 * w_norm
-            m.scale.y = 0.04 + 0.02 * w_norm
-            m.scale.z = 0.04
+            m.scale.x = arrow_len * (0.85 + 0.3 * w_norm)
+            m.scale.y = arrow_wid * (0.85 + 0.2 * w_norm)
+            m.scale.z = arrow_wid
             m.color.r = float(r)
             m.color.g = float(g)
             m.color.b = float(b)
-            m.color.a = float(a)
+            m.color.a = float(a) * 0.65
             markers.markers.append(m)
+        return markers
+
+    def _make_duckiebot_marker(self, stamp, ns: str, marker_id: int, x: float, y: float, theta: float, color: Tuple[float, float, float, float]) -> List[Marker]:
+        (r, g, b, a) = color
+        body_len = self._room_span * 0.14
+        body_wid = self._room_span * 0.09
+        body_h = self._room_span * 0.03
+        z = body_h * 0.5
+        body = Marker()
+        body.header.stamp = stamp
+        body.header.frame_id = self.map_frame
+        body.ns = ns
+        body.id = marker_id
+        body.type = Marker.CUBE
+        body.action = Marker.ADD
+        body.pose.position.x = x
+        body.pose.position.y = y
+        body.pose.position.z = z
+        body.pose.orientation = yaw_to_quaternion(theta)
+        body.scale.x = body_len
+        body.scale.y = body_wid
+        body.scale.z = body_h
+        body.color.r = float(r)
+        body.color.g = float(g)
+        body.color.b = float(b)
+        body.color.a = float(a)
+        nose = Marker()
+        nose.header.stamp = stamp
+        nose.header.frame_id = self.map_frame
+        nose.ns = ns
+        nose.id = marker_id + 1000
+        nose.type = Marker.ARROW
+        nose.action = Marker.ADD
+        nose.pose.position.x = x
+        nose.pose.position.y = y
+        nose.pose.position.z = z + body_h * 0.6
+        nose.pose.orientation = yaw_to_quaternion(theta)
+        nose.scale.x = body_len * 0.55
+        nose.scale.y = body_wid * 0.35
+        nose.scale.z = body_wid * 0.25
+        nose.color.r = float(r)
+        nose.color.g = float(g)
+        nose.color.b = float(b)
+        nose.color.a = float(a)
+        return [body, nose]
+
+    def _make_robot_markers(self, stamp) -> MarkerArray:
+        markers = MarkerArray()
+        best = self.pf.best_particle()
+        markers.markers.extend(
+            self._make_duckiebot_marker(
+                stamp, 'pf_best_robot', 0, best.x, best.y, best.theta, (0.1, 0.75, 1.0, 1.0)
+            )
+        )
+        (est_x, est_y, est_theta) = self.pf.estimated_pose()
+        markers.markers.extend(
+            self._make_duckiebot_marker(
+                stamp, 'pf_mean_robot', 1, est_x, est_y, est_theta, (0.2, 1.0, 0.35, 0.75)
+            )
+        )
         return markers
 
     def _make_tag_and_room_markers(self, stamp) -> MarkerArray:
@@ -400,7 +490,7 @@ class ParticleFilterNodeROS1:
         room.id = 0
         room.type = Marker.LINE_STRIP
         room.action = Marker.ADD
-        room.scale.x = 0.03
+        room.scale.x = max(self._room_span * 0.008, 0.003)
         room.color.r = 0.6
         room.color.g = 0.6
         room.color.b = 0.6
@@ -417,15 +507,16 @@ class ParticleFilterNodeROS1:
             tag.action = Marker.ADD
             tag.pose.position.x = float(tx)
             tag.pose.position.y = float(ty)
-            tag.pose.position.z = 0.2
+            tag.pose.position.z = self.tag_size_m * 0.5
             tag.pose.orientation = yaw_to_quaternion(float(self.tag_yaw[idx]))
+            wall_thickness = max(self._room_span * 0.008, 0.003)
             if self._tag_on_east_west_wall(float(tx)):
-                tag.scale.x = 0.02
+                tag.scale.x = wall_thickness
                 tag.scale.y = self.tag_size_m
                 tag.scale.z = self.tag_size_m
             else:
                 tag.scale.x = self.tag_size_m
-                tag.scale.y = 0.02
+                tag.scale.y = wall_thickness
                 tag.scale.z = self.tag_size_m
             tag.color.r = 0.95
             tag.color.g = 0.85
@@ -441,8 +532,8 @@ class ParticleFilterNodeROS1:
             label.action = Marker.ADD
             label.pose.position.x = float(tx)
             label.pose.position.y = float(ty)
-            label.pose.position.z = 0.35
-            label.scale.z = 0.12
+            label.pose.position.z = self.tag_size_m + self._room_span * 0.04
+            label.scale.z = max(self._room_span * 0.05, 0.03)
             label.color.r = 1.0
             label.color.g = 1.0
             label.color.b = 1.0
@@ -465,6 +556,7 @@ class ParticleFilterNodeROS1:
             cloud.poses.append(pose)
         self.particles_pub.publish(cloud)
         self.particle_markers_pub.publish(self._make_particle_markers(stamp))
+        self.robot_markers_pub.publish(self._make_robot_markers(stamp))
         self.tag_markers_pub.publish(self._make_tag_and_room_markers(stamp))
         (est_x, est_y, est_theta) = self.pf.estimated_pose()
         estimate = PoseStamped()

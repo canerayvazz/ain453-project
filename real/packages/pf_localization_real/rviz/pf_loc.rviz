@@ -7,7 +7,7 @@ Visualization Manager:
   Class: ""
   Displays:
     - Alpha: 0.5
-      Cell Size: 0.5
+      Cell Size: 0.1
       Class: rviz/Grid
       Color: 160; 160; 164
       Enabled: true
@@ -16,34 +16,32 @@ Visualization Manager:
       Reference Frame: <Fixed Frame>
     - Class: rviz/MarkerArray
       Enabled: true
-      Marker Topic: /particle_markers
-      Name: ParticlesWeighted
-      Namespaces:
-        particles: true
-    - Class: rviz/MarkerArray
-      Enabled: true
       Marker Topic: /tag_markers
       Name: ARTags
       Namespaces:
         ar_tags: true
         ar_tag_labels: true
         room: true
-    - Alpha: 1
-      Buffer Length: 1
-      Class: rviz/Path
-      Color: 255; 0; 0
+    - Class: rviz/MarkerArray
       Enabled: true
-      Line Style: Lines
-      Line Width: 0.03
-      Name: OdomPath
-      Topic: /odom_path
+      Marker Topic: /particle_markers
+      Name: ParticlesWeighted
+      Namespaces:
+        particles: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /robot_markers
+      Name: Robots
+      Namespaces:
+        pf_best_robot: true
+        pf_mean_robot: true
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
       Color: 0; 255; 0
       Enabled: true
       Line Style: Lines
-      Line Width: 0.03
+      Line Width: 0.01
       Name: PFPath
       Topic: /pf_path
     - Class: rviz/Image
@@ -62,13 +60,13 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 8
+      Distance: 1.4
       Focal Point:
-        X: 2.5
-        Y: 2
+        X: 0.45
+        Y: 0.45
         Z: 0
       Name: Current View
-      Pitch: 0.8
+      Pitch: 1.2
       Yaw: 0.785
 Window Geometry:
   Height: 800

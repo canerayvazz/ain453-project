@@ -1,16 +1,16 @@
 num_particles: 500
 
 room_min_x: 0.0
-room_max_x: 5.0
+room_max_x: 0.9
 room_min_y: 0.0
-room_max_y: 4.0
+room_max_y: 0.9
 
-tag_size_m: 0.2
+tag_size_m: 0.065
 tag_family: tag36h11
 
-tag_x: [1.0, 3.5, 0.5, 4.0, 5.0, 5.0, 0.0, 0.0]
-tag_y: [4.0, 4.0, 0.0, 0.0, 1.5, 3.0, 0.8, 3.2]
-tag_yaw: [-1.5707963267948966, -1.5707963267948966, 1.5707963267948966, 1.5707963267948966, 3.141592653589793, 3.141592653589793, 0.0, 0.0]
+tag_x: [0.33, 0.50, 0.90, 0.90, 0.0, 0.0, 0.05, 0.55]
+tag_y: [0.0, 0.0, 0.25, 0.45, 0.42, 0.71, 0.90, 0.90]
+tag_yaw: [0.0, 0.0, 3.141592653589793, 3.141592653589793, 0.0, 0.0, 0.0, 0.0]
 
 odom_noise_trans: 0.05
 odom_noise_rot: 0.05
@@ -18,11 +18,11 @@ sensor_noise_range: 0.25
 sensor_noise_bearing: 0.12
 
 min_resample_neff_ratio: 0.5
-min_odom_travel_before_updates_m: 0.15
+min_odom_travel_before_updates_m: 0.10
 
 seed_particles_from_odom: false
-init_std_x: 0.35
-init_std_y: 0.35
+init_std_x: 0.12
+init_std_y: 0.12
 init_std_yaw: 0.4
 
 camera_yaw_offset: 0.0
@@ -37,3 +37,5 @@ camera_horizontal_fov: 1.04
 
 camera_image_topic: ""
 pose_topic: ""
+
+viz_particle_stride: 4

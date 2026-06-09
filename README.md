@@ -82,9 +82,12 @@ dts duckiebot keyboard_control wolf
 
 ```bash
 cd real
-dts start_gui_tools --mount "$(pwd)" wolf
+dts start_gui_tools --mount "$(pwd)":/real --wkdir /real wolf
 bash launchers/rviz.sh
 ```
+
+Inside the container you land in `/real`. If you used `--mount "$(pwd)"` without `:/real`, run
+`bash /home/caner/project/real/launchers/rviz.sh` (use your laptop path) or `cd` there first.
 
 Set RViz **Fixed Frame** to `odom` if the view is empty. Camera-only check:
 
@@ -92,7 +95,7 @@ Set RViz **Fixed Frame** to `odom` if the view is empty. Camera-only check:
 rqt_image_view /camera/image_annotated
 ```
 
-Real robot uses AprilTag `tag36h11` (`tag_family` in `real/packages/pf_localization_real/config/pf_params.yaml`). Change `wolf` to your robot name in launchers and commands.
+Real robot uses AprilTag `tag36h11` (6.5 cm markers) on a **0.9 m × 0.9 m** lab grid; tag centers are in `real/packages/pf_localization_real/config/pf_params.yaml`. Physical tags may have **different IDs** — the filter still sums likelihoods over all eight landmark positions (same multi-hypothesis logic as simulation). Odometry pose comes from `/{veh}/velocity_to_pose_node/pose` (integrated wheel velocity). Change `wolf` to your robot name in launchers and commands.
 
 **Laptop amd64 image** (only if you run `dts devel run` locally without `-H`):
 
@@ -108,7 +111,7 @@ dts devel build -f
 | `ros2_ws/src/pf_localization/config/pf_params.yaml` | Simulation |
 | `real/packages/pf_localization_real/config/pf_params.yaml` | Physical robot |
 
-Shared map: room 5×4 m, eight asymmetric tag centers, `num_particles: 500`, motion/sensor noise from project spec.
+Simulation map: 5×4 m room with eight asymmetric tag centers. Lab map: 0.9×0.9 m grid (origin bottom-left). Both use `num_particles: 500` and the same multi-hypothesis sensor model.
 
 ## Visualization topics
 
@@ -119,3 +122,8 @@ Both stacks publish:
 - `/odom_path` — red (odometry)
 - `/pf_path` — green (filter estimate)
 - `/camera/image_annotated` — detections overlay
+
+Real robot also publishes `/robot_markers`:
+
+- **Cyan** — highest-weight particle (best hypothesis)
+- **Light green** — weighted-mean PF estimate
